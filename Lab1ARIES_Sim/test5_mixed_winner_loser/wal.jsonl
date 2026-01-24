@@ -1,0 +1,7 @@
+{"LSN": 1, "type": "BEGIN", "tx": "T1"}
+{"LSN": 2, "type": "BEGIN", "tx": "T2"}
+{"LSN": 3, "type": "UPDATE", "tx": "T1", "page": "P1", "before": 0, "after": 10}
+{"LSN": 4, "type": "UPDATE", "tx": "T2", "page": "P2", "before": 0, "after": 20}
+{"LSN": 5, "type": "CHECKPOINT", "DPT": {"P1": 3, "P2": 4}, "TT": {"T1": {"status": "RUNNING", "lastLSN": 3}, "T2": {"status": "RUNNING", "lastLSN": 4}}}
+{"LSN": 6, "type": "COMMIT", "tx": "T1"}
+{"LSN": 7, "type": "UPDATE", "tx": "T2", "page": "P2", "before": 20, "after": 30}

@@ -1,0 +1,5 @@
+{"LSN": 1, "type": "BEGIN", "tx": "T1"}
+{"LSN": 2, "type": "UPDATE", "tx": "T1", "page": "P1", "before": 0, "after": 100}
+{"LSN": 3, "type": "COMMIT", "tx": "T1"}
+{"LSN": 4, "type": "BEGIN", "tx": "T2"}
+{"LSN": 5, "type": "UPDATE", "tx": "T2", "page": "P2", "before": 0, "after": 200}

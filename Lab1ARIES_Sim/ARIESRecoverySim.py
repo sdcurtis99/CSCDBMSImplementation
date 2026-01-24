@@ -1,119 +1,136 @@
 import json
-from pprint import pprint
 
-# Task 1 : Read in and store the json data for the wal and disk_pages snapshot
+# Task 1 : Read WAL and disk snapshot
 
 wal = []
-with open("wal.jsonl", "r") as file :
+with open("wal.jsonl", "r") as file:
     for line in file:
         wal.append(json.loads(line))
-#pprint(wal)
 
-dsnap = {}
-with open("disk_pages.json", "r") as file :
+with open("disk_pages.json", "r") as file:
     dsnap = json.load(file)
-#pprint(dsnap)
 
-# Task 2 : Preform the analysis, detmine winner/losers construct DPT and TT
-# 1st Implementation will be without the logic for checkpoints
+# Task 2 : ANALYSIS PHASE
 
 TT = {}
 DPT = {}
-print(dsnap)
-for entry in wal :
-    lastLSN = entry["LSN"]
-    eType = entry["type"]
 
-    if eType == "BEGIN" :
-        tID = entry["tx"]
-        TT[tID] = {
-            "status": "active",
-            "lastLSN": lastLSN
+last_checkpoint = None
+for entry in reversed(wal):
+    if entry["type"] == "CHECKPOINT":
+        last_checkpoint = entry
+        break
+
+start_index = 0
+
+if last_checkpoint:
+    DPT = dict(last_checkpoint["DPT"])
+    for tx, info in last_checkpoint["TT"].items():
+        TT[tx] = {
+            "status": "active",  
+            "lastLSN": info["lastLSN"]
         }
+    start_index = wal.index(last_checkpoint) + 1
 
-    elif eType == "UPDATE" :
-        tID = entry["tx"]
-        TT[tID]["lastLSN"] = lastLSN
-        # Build DPT 
-        # Get the page and it's associated lsn then add only if first occurance
+for entry in wal[start_index:]:
+    lsn = entry["LSN"]
+    etype = entry["type"]
+
+    if etype == "BEGIN":
+        TT[entry["tx"]] = {"status": "active", "lastLSN": lsn}
+
+    elif etype == "UPDATE":
+        tx = entry["tx"]
         page = entry["page"]
-        if page not in DPT :
-            DPT[page] = lastLSN
+        TT[tx]["lastLSN"] = lsn
+        if page not in DPT:
+            DPT[page] = lsn
 
-    elif eType == "COMMIT" :
-        tID = entry["tx"]
-        TT[tID]["status"] = "committed"
-        TT[tID]["lastLSN"] = lastLSN
+    elif etype == "COMMIT":
+        tx = entry["tx"]
+        TT[tx]["status"] = "committed"
+        TT[tx]["lastLSN"] = lsn
 
-    elif eType == "END" :
-        tID = entry["tx"]
-        del TT[tID]
+    elif etype == "END":
+        del TT[entry["tx"]]
 
-    elif eType == "ABORT":
-        tID = entry["tx"]
-        TT[tID]["lastLSN"] = lastLSN
+# Task 3 : REDO PHASE
 
-    #if tID == "CHECKPOINT" ADD CHECKPOINT IMPLEMENATION LATER TODO
-
-# Task 3 : Preform the Redo; only when pageLsn < LSN of the update log record
 redoneLSNS = ""
+
 if DPT:
-    rStart = min(DPT.values())
+    redo_start = min(DPT.values())
 
-    for entry in wal :
-        logLSN = entry["LSN"]
+    for entry in wal:
+        lsn = entry["LSN"]
 
-        if logLSN < rStart :
+        if lsn < redo_start:
             continue
 
-        if entry["type"] == "UPDATE" :
+        if entry["type"] == "UPDATE":
             page = entry["page"]
-
-            if dsnap[page]["pageLSN"] < logLSN:
-                dsnap[page]["pageLSN"] = logLSN
+            if page in DPT and dsnap[page]["pageLSN"] < lsn:
                 dsnap[page]["value"] = entry["after"]
-                redoneLSNS += ("\t" + "REDO:" + str(logLSN) + "\n")
+                dsnap[page]["pageLSN"] = lsn
+                redoneLSNS += f"\tREDO:{lsn}\n"
 
-# Task 4: Preform UNDO & use/find losers trans
+# Task 4 : UNDO PHASE 
+
 losers = {tx for tx, entry in TT.items() if entry["status"] == "active"}
 winners = {tx for tx, entry in TT.items() if entry["status"] == "committed"}
-undoneLSN = ""
-for entry in reversed(wal) :
-    if entry["type"] == "UPDATE" and entry["tx"] in losers:
-        dsnap[entry["page"]]["value"] = entry["before"]
-        dsnap[entry["page"]]["pageLSN"] = entry["LSN"]  #Might Be Wrong
-        undoneLSN += ("\t" + "UNDO:" + str(entry["LSN"]) + "\n")
-        print(dsnap)
 
-with open("disk_pages_after.json", "w") as file :
+undoneLSN = ""
+clrLSNs = ""
+
+nextCLRLSN = max(entry["LSN"] for entry in wal) + 1
+
+for entry in reversed(wal):
+    if entry["type"] == "UPDATE" and entry["tx"] in losers:
+        page = entry["page"]
+
+        dsnap[page]["value"] = entry["before"]
+        dsnap[page]["pageLSN"] = nextCLRLSN  
+
+        undoneLSN += f"\tUNDO:{entry['LSN']}\n"
+        clrLSNs += (
+            f"\tCLR: tx={entry['tx']} "
+            f"page={page} "
+            f"undoLSN={entry['LSN']} "
+            f"CLR_LSN={nextCLRLSN}\n"
+        )
+
+        nextCLRLSN += 1
+
+
+with open("disk_pages_after.json", "w") as file:
     json.dump(dsnap, file, indent=2)
 
-## Show desired output
-if winners : 
-    print("\nWinners: ", winners, "\n")
+
+print("\nWinners:", winners if winners else "No Winning Transactions")
+print("Losers:", losers if losers else "No Losing Transactions\n")
+
+if TT:
+    print("Transaction Table:")
+    print(TT, "\n")
+
+if DPT:
+    print("Dirty Page Table:")
+    print(DPT, "\n")
+
+if redoneLSNS:
+    print("REDONE LSN Records:")
+    print(redoneLSNS, end="")
 else:
-    print("\nNo Winning Transactions\n")
+    print("No updates were redone\n")
 
-if losers : 
-    print("Losers : ", losers, "\n")
+if undoneLSN:
+    print("UNDONE LSN Records:")
+    print(undoneLSN, end="")
 else:
-    print("No Losing Transactions\n")
+    print("No updates were undone\n")
 
-if redoneLSNS :
-    print("REDONE LSN Records:\n" + redoneLSNS)
-else :
-    print("No updates were redone")
-
-if undoneLSN :
-    print("UNDONE LSN Records:\n" + undoneLSN)
-else :
-    print("No updates were undone")
-
-
-
-# ABORT, Checkpoints, CLRs? How do we want to show?
-# UNDO update disk lsn
-# Testing
-
-
-
+if clrLSNs:
+    print("CLR Records:")
+    print(clrLSNs)
+else:
+    print("No CLR records generated")
