@@ -19,7 +19,7 @@ with open("disk_pages.json", "r") as file :
 
 TT = {}
 DPT = {}
-
+print(dsnap)
 for entry in wal :
     lastLSN = entry["LSN"]
     eType = entry["type"]
@@ -48,6 +48,10 @@ for entry in wal :
     elif eType == "END" :
         tID = entry["tx"]
         del TT[tID]
+
+    elif eType == "ABORT":
+        tID = entry["tx"]
+        TT[tID]["lastLSN"] = lastLSN
 
     #if tID == "CHECKPOINT" ADD CHECKPOINT IMPLEMENATION LATER TODO
 
@@ -79,15 +83,16 @@ for entry in reversed(wal) :
         dsnap[entry["page"]]["value"] = entry["before"]
         dsnap[entry["page"]]["pageLSN"] = entry["LSN"]  #Might Be Wrong
         undoneLSN += ("\t" + "UNDO:" + str(entry["LSN"]) + "\n")
+        print(dsnap)
 
 with open("disk_pages_after.json", "w") as file :
     json.dump(dsnap, file, indent=2)
 
 ## Show desired output
 if winners : 
-    print("Winners: ", winners, "\n")
+    print("\nWinners: ", winners, "\n")
 else:
-    print("No Winning Transactions\n")
+    print("\nNo Winning Transactions\n")
 
 if losers : 
     print("Losers : ", losers, "\n")
@@ -106,8 +111,9 @@ else :
 
 
 
-
-
+# ABORT, Checkpoints, CLRs? How do we want to show?
+# UNDO update disk lsn
+# Testing
 
 
 
