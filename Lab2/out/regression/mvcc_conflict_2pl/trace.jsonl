@@ -1,0 +1,12 @@
+{"event": "OP", "t": 1, "op": "BEGIN", "result": "OK", "step": 1}
+{"event": "OP", "t": 2, "op": "BEGIN", "result": "OK", "step": 2}
+{"event": "LOCK", "item": "A", "grant": "X", "to": 1, "step": 3}
+{"event": "OP", "t": 1, "op": "W", "item": "A", "value": 111, "result": "OK", "step": 4}
+{"event": "OP", "t": 2, "op": "W", "item": "A", "result": "BLOCKED", "why": "waiting for X(A)", "step": 5}
+{"event": "OP", "t": 1, "op": "COMMIT", "result": "OK", "step": 6}
+{"event": "UNBLOCK", "t": 2, "op": "W", "item": "A", "step": 7}
+{"event": "LOCK", "item": "A", "grant": "X", "to": 2, "step": 8}
+{"event": "OP", "t": 2, "op": "W", "item": "A", "value": 222, "result": "OK", "step": 9}
+{"event": "LOCK", "item": "B", "grant": "X", "to": 2, "step": 10}
+{"event": "OP", "t": 2, "op": "W", "item": "B", "value": 333, "result": "OK", "step": 11}
+{"event": "OP", "t": 2, "op": "COMMIT", "result": "OK", "step": 12}

@@ -1,0 +1,5 @@
+{"event": "OP", "t": 1, "op": "BEGIN", "result": "OK", "step": 1}
+{"event": "OP", "t": 2, "op": "BEGIN", "result": "OK", "step": 2}
+{"event": "OP", "t": 1, "op": "W", "item": "A", "value": 1000, "result": "OK", "step": 3}
+{"event": "OP", "t": 2, "op": "W", "item": "A", "value": 2000, "result": "OK", "step": 4}
+{"event": "OP", "t": 2, "op": "COMMIT", "result": "OK", "step": 5}

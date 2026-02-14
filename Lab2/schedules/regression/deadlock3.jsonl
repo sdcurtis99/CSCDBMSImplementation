@@ -1,0 +1,9 @@
+{"t":1,"op":"BEGIN"}
+{"t":2,"op":"BEGIN"}
+{"t":3,"op":"BEGIN"}
+{"t":1,"op":"W","item":"A","value":1}
+{"t":2,"op":"W","item":"B","value":2}
+{"t":3,"op":"W","item":"X","value":3}
+{"t":1,"op":"W","item":"B","value":1}
+{"t":2,"op":"W","item":"X","value":2}
+{"t":3,"op":"W","item":"A","value":3}
