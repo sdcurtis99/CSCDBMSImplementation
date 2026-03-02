@@ -8,6 +8,7 @@ import math
 
 SEP = "=" * 60
 
+
 # ---------------------------------------------------------------------------
 # Data Loading
 # ---------------------------------------------------------------------------
@@ -40,7 +41,6 @@ INDEX_TARGETS = [
 ]
 
 def build_indexes(relations):
-    """indexes[relation][attribute][value] = [(page_idx, tuple_idx), ...]"""
     indexes = {}
     for rel_name, attr in INDEX_TARGETS:
         bucket = {}
@@ -51,7 +51,6 @@ def build_indexes(relations):
     return indexes
 
 def index_lookup(relations, indexes, rel_name, attr, value):
-    """Return (tuples, pages_read) for all tuples where rel_name.attr = value."""
     locations  = indexes[rel_name][attr].get(value, [])
     pages      = relations[rel_name]["pages"]
     seen_pages = set()
@@ -72,13 +71,11 @@ def get_children(node):
     return []
 
 def get_relations(node):
-    """Return all relation names reachable from a subtree."""
     if node["op"] == "Scan":
         return {node["relation"]}
     return set().union(*[get_relations(c) for c in get_children(node)])
 
 def fmt_node(node):
-    """One-line label for a logical query tree node."""
     op = node["op"]
     if op == "Scan":    return f"Scan({node['relation']})"
     if op == "Project": return f"Project({', '.join(node['attrs'])})"
@@ -100,13 +97,7 @@ def print_tree(node, depth=0):
 # ---------------------------------------------------------------------------
 
 def rewrite(node):
-    """
-    Single bottom-up pass applying all rewrite rules:
-      - Combine stacked Selects into one AND predicate
-      - Push Select below Join to matching side
-      - Push Project below Join (split attrs by side, preserve join keys)
-    Join commutativity is handled during plan enumeration.
-    """
+
     if "child" in node:
         node = {**node, "child": rewrite(node["child"])}
     elif "left" in node:
@@ -115,6 +106,20 @@ def rewrite(node):
     if node["op"] == "Select" and node["child"]["op"] == "Select":
         merged = node["predicate"] + ["AND"] + node["child"]["predicate"]
         return rewrite({"op": "Select", "predicate": merged, "child": node["child"]["child"]})
+
+    if node["op"] == "Select" and node["child"]["op"] == "Project":
+        return {
+            "op": "Project",
+            "attrs": node["child"]["attrs"],
+            "child": rewrite({
+                "op": "Select",
+                "predicate": node["predicate"],
+                "child": node["child"]["child"]
+            })
+        }
+
+    if node["op"] == "Project" and node["child"]["op"] == "Project":
+        return rewrite({**node, "child": node["child"]["child"]})
 
     if node["op"] == "Select" and node["child"]["op"] == "Join":
         join = node["child"]
@@ -133,9 +138,11 @@ def rewrite(node):
         r_attrs = [a for a in node["attrs"] if a.split(".")[0] in r_rels]
         if jl not in l_attrs: l_attrs.append(jl)
         if jr not in r_attrs: r_attrs.append(jr)
-        return {**join,
-                "left":  {"op": "Project", "attrs": l_attrs, "child": join["left"]},
-                "right": {"op": "Project", "attrs": r_attrs, "child": join["right"]}}
+        return {
+            **join,
+            "left": rewrite({"op": "Project", "attrs": l_attrs, "child": join["left"]}),
+            "right": rewrite({"op": "Project", "attrs": r_attrs, "child": join["right"]})
+        }
 
     return node
 
@@ -145,13 +152,6 @@ def rewrite(node):
 # ---------------------------------------------------------------------------
 
 def estimate(node, stats, page_size):
-    """
-    Returns (T, B) using lecture formulas:
-      Scan:    T, B from stats
-      Select:  T = child_T / V(R,A) per condition,  B = ceil(T / page_size)
-      Project: T = child_T,                          B = ceil(T / page_size)
-      Join:    T = left_T * right_T / max(V(R,a), V(S,b)), B = ceil(T / page_size)
-    """
     op = node["op"]
     if op == "Scan":
         return stats[node["relation"]]["T"], stats[node["relation"]]["B"]
@@ -174,79 +174,146 @@ def estimate(node, stats, page_size):
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def base_relation(plan):
+    while plan["op"] == "Project":
+        plan = plan["child"]
+    return plan["relation"]
+
+
+# ---------------------------------------------------------------------------
 # Physical Plan Enumeration
 # ---------------------------------------------------------------------------
 
 def leaf_plans(node, stats, page_size, indexes):
-    """SeqScan always; IndexScan if an index covers the predicate."""
     rel  = node["child"]["relation"] if node["op"] == "Select" else node["relation"]
     pred = node["predicate"]         if node["op"] == "Select" else None
     est_T, est_B = estimate(node, stats, page_size)
 
-    plans = [{"op": "SeqScan", "relation": rel, "predicate": pred,
-              "cost": stats[rel]["B"], "est_T": est_T, "est_B": est_B}]
+    plans = [{
+        "op": "SeqScan",
+        "relation": rel,
+        "predicate": pred,
+        "cost": stats[rel]["B"],
+        "est_T": est_T,
+        "est_B": est_B
+    }]
 
     if pred:
         rel_name, col = pred[0].split(".")
         if rel_name in indexes and col in indexes[rel_name]:
             idx_cost = HASH_LOOKUP_COST + math.ceil(
                 stats[rel_name]["T"] / stats[rel_name]["V"][col] / page_size)
-            plans.append({"op": "IndexScan", "relation": rel, "predicate": pred,
-                          "cost": idx_cost, "est_T": est_T, "est_B": est_B})
+            plans.append({
+                "op": "IndexScan",
+                "relation": rel,
+                "predicate": pred,
+                "cost": idx_cost,
+                "est_T": est_T,
+                "est_B": est_B
+            })
+
     return plans
+
 
 def enumerate_plans(node, stats, page_size, indexes):
-    """HashJoin and NestedLoopJoin (both orderings) x all access plan combinations."""
-    if node["op"] != "Join":
-        return leaf_plans(node, stats, page_size, indexes)
 
-    lps = leaf_plans(node["left"],  stats, page_size, indexes)
-    rps = leaf_plans(node["right"], stats, page_size, indexes)
-    cond, plans = node["condition"], []
+    if node["op"] == "Project":
+        child_plans = enumerate_plans(node["child"], stats, page_size, indexes)
+        return [{
+            "op": "Project",
+            "attrs": node["attrs"],
+            "child": p,
+            "cost": p["cost"],
+            "est_T": p["est_T"],
+            "est_B": p["est_B"]
+        } for p in child_plans]
 
-    for lp in lps:
-        for rp in rps:
-            plans.append({"op": "HashJoin",      "condition": cond,
-                          "left": lp, "right": rp,
-                          "cost": lp["cost"] + rp["cost"]})
-            plans.append({"op": "NestedLoopJoin", "condition": cond,
-                          "outer": lp, "inner": rp,
-                          "cost": lp["cost"] + lp["est_T"] * stats[rp["relation"]]["B"]})
-            plans.append({"op": "NestedLoopJoin", "condition": cond,
-                          "outer": rp, "inner": lp,
-                          "cost": rp["cost"] + rp["est_T"] * stats[lp["relation"]]["B"]})
-    return plans
+    if node["op"] == "Join":
+        lps = enumerate_plans(node["left"],  stats, page_size, indexes)
+        rps = enumerate_plans(node["right"], stats, page_size, indexes)
+        cond, plans = node["condition"], []
+
+        join_T, join_B = estimate(node, stats, page_size)
+
+        for lp in lps:
+            for rp in rps:
+                plans.append({
+                    "op": "HashJoin",
+                    "condition": cond,
+                    "left": lp,
+                    "right": rp,
+                    "cost": lp["cost"] + rp["cost"],
+                    "est_T": join_T,
+                    "est_B": join_B
+                })
+
+                plans.append({
+                    "op": "NestedLoopJoin",
+                    "condition": cond,
+                    "outer": lp,
+                    "inner": rp,
+                    "cost": lp["cost"] + lp["est_T"] * stats[base_relation(rp)]["B"],
+                    "est_T": join_T,
+                    "est_B": join_B
+                })
+
+                plans.append({
+                    "op": "NestedLoopJoin",
+                    "condition": cond,
+                    "outer": rp,
+                    "inner": lp,
+                    "cost": rp["cost"] + rp["est_T"] * stats[base_relation(lp)]["B"],
+                    "est_T": join_T,
+                    "est_B": join_B
+                })
+
+        return plans
+
+    return leaf_plans(node, stats, page_size, indexes)
 
 
 # ---------------------------------------------------------------------------
-# Plan Formatting and Printing
+# Plan Formatting Helpers
 # ---------------------------------------------------------------------------
 
 def fmt_access(plan):
     pred_str = ""
     if plan.get("predicate"):
-        parts    = [f"{plan['predicate'][i]}={plan['predicate'][i+2]!r}"
-                    for i in range(0, len(plan["predicate"]), 4)]
+        parts = [
+            f"{plan['predicate'][i]}={plan['predicate'][i+2]!r}"
+            for i in range(0, len(plan["predicate"]), 4)
+        ]
         pred_str = ", pred=" + " AND ".join(parts)
-    return f"{plan['op']}({plan['relation']}{pred_str}, cost={plan['cost']}, est_T={plan['est_T']:.1f})"
 
-def fmt_plan(plan):
+    relation = plan.get("relation", "")
+    return f"{plan['op']}({relation}{pred_str}, cost={plan['cost']:.1f}, est_T={plan['est_T']:.1f})"
+
+
+def fmt_plan(plan, indent="     "):
+    if plan["op"] == "Project":
+        return (
+            f"Project({', '.join(plan['attrs'])})\n"
+            f"{indent}-> {fmt_plan(plan['child'], indent + '   ')}"
+        )
+
     if plan["op"] == "HashJoin":
-            return (f"HashJoin\n"
-                f"     left  = {fmt_access(plan['left'])}\n"
-                f"     right = {fmt_access(plan['right'])}")
-    return     (f"NestedLoopJoin\n"
-                f"     outer = {fmt_access(plan['outer'])}\n"
-                f"     inner = {fmt_access(plan['inner'])}")
+        return (
+            f"HashJoin\n"
+            f"{indent}left  = {fmt_plan(plan['left'], indent + '        ')}\n"
+            f"{indent}right = {fmt_plan(plan['right'], indent + '        ')}"
+        )
 
-def print_plans(plans):
-    print(SEP); print("4. CANDIDATE PHYSICAL PLANS"); print(SEP)
-    for i, plan in enumerate(plans, 1):
-        print(f"  Plan {i}: {fmt_plan(plan)}\n     total cost = {plan['cost']:.1f}\n")
-    best = min(plans, key=lambda p: p["cost"])
-    print(SEP); print("5. CHOSEN PLAN"); print(SEP)
-    print(f"  {fmt_plan(best)}\n  Estimated cost = {best['cost']:.1f}")
-    return best
+    if plan["op"] == "NestedLoopJoin":
+        return (
+            f"NestedLoopJoin\n"
+            f"{indent}outer = {fmt_plan(plan['outer'], indent + '        ')}\n"
+            f"{indent}inner = {fmt_plan(plan['inner'], indent + '        ')}"
+        )
+
+    return fmt_access(plan)
 
 
 # ---------------------------------------------------------------------------
@@ -254,13 +321,17 @@ def print_plans(plans):
 # ---------------------------------------------------------------------------
 
 def apply_predicate(tup, predicate):
-    """Test a tuple against [attr, =, val] or [attr, =, val, AND, attr, =, val, ...]."""
     return all(tup.get(predicate[i].split(".")[1]) == predicate[i + 2]
                for i in range(0, len(predicate), 4))
 
 def execute(plan, relations, indexes):
-    """Run a physical plan. Returns (result_tuples, total_io)."""
     op = plan["op"]
+
+    if op == "Project":
+        child_tuples, child_io = execute(plan["child"], relations, indexes)
+        attrs = [a.split(".")[1] for a in plan["attrs"]]
+        result = [{k: t[k] for k in attrs if k in t} for t in child_tuples]
+        return result, child_io
 
     if op == "SeqScan":
         pages = relations[plan["relation"]]["pages"]
@@ -287,7 +358,7 @@ def execute(plan, relations, indexes):
     if op == "NestedLoopJoin":
         outer_tuples, outer_io    = execute(plan["outer"], relations, indexes)
         inner_tuples, one_scan_io = execute(plan["inner"], relations, indexes)
-        outer_rel                 = plan["outer"]["relation"]
+        outer_rel                 = base_relation(plan["outer"])
         cl_rel, cl_col = plan["condition"][0].split(".")
         cr_rel, cr_col = plan["condition"][2].split(".")
         o_col = cl_col if cl_rel == outer_rel else cr_col
@@ -327,14 +398,24 @@ def main():
 
     print()
     plans = enumerate_plans(rewritten, stats, page_size, indexes)
-    best  = print_plans(plans)
+    best  = min(plans, key=lambda p: p["cost"])
 
-    print(); print(SEP); print("6. EXECUTION"); print(SEP)
+    print(SEP); print("4. CANDIDATE PHYSICAL PLANS"); print(SEP)
+    for i, plan in enumerate(plans, 1):
+        print(f"  Plan {i}:")
+        print(f"{fmt_plan(plan)}")
+        print(f"     total cost = {plan['cost']:.1f}\n")
+
+    print(SEP); print("5. CHOSEN PLAN"); print(SEP)
+    print(f"{fmt_plan(best)}")
+    print(f"  Estimated cost = {best['cost']:.1f}")
+
+    print(SEP); print("6. EXECUTION"); print(SEP)
     result, actual_io = execute(best, relations, indexes)
     print(f"  Estimated cost : {best['cost']:.1f} I/Os")
     print(f"  Actual I/O     : {actual_io} pages")
 
-    print(); print(SEP); print(f"7. RESULT TUPLES ({len(result)} rows)"); print(SEP)
+    print(SEP); print(f"7. RESULT TUPLES ({len(result)} rows)"); print(SEP)
     for tup in result:
         print(f"  {tup}")
 
