@@ -1,0 +1,14 @@
+{
+  "op": "Join",
+  "condition": ["Student.sid", "=", "Enroll.sid"],
+  "left": {
+    "op": "Select",
+    "predicate": ["Student.major", "=", "CS"],
+    "child": { "op": "Scan", "relation": "Student" }
+  },
+  "right": {
+    "op": "Select",
+    "predicate": ["Enroll.course", "=", "DB"],
+    "child": { "op": "Scan", "relation": "Enroll" }
+  }
+}
